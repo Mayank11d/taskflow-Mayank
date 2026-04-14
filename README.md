@@ -164,7 +164,7 @@ cp .env.example .env
 | `JWT_SECRET`   | Yes      | Secret key used to sign JWTs                      | `a-very-long-random-secret-string`                   |
 | `NODE_ENV`     | No       | Environment mode                                  | `development` / `production`                         |
 
-> ⚠️ **Never commit `.env` to git.** Only `.env.example` should be in version control.
+
 
 ---
 
