@@ -1,6 +1,6 @@
-# TaskFlow
+# TaskFlow — Backend
 
-A minimal but production-quality task management system with authentication, project management, and task tracking — built as part of an engineering take-home assignment.
+A RESTful API for the TaskFlow task management system. Handles authentication, project management, and task tracking with role-based access control.
 
 ---
 
@@ -18,95 +18,114 @@ A minimal but production-quality task management system with authentication, pro
 
 ## Overview
 
-TaskFlow allows users to register, log in, create projects, and manage tasks within those projects. Tasks can be assigned to team members, filtered by status or assignee, and updated with priorities and due dates.
+TaskFlow backend is a **Node.js + TypeScript** REST API that powers user authentication, project creation, and task management. It connects to a **Neon PostgreSQL** (serverless cloud Postgres) database and is containerized with Docker.
 
 ### Tech Stack
 
-| Layer       | Technology                                      |
-|-------------|--------------------------------------------------|
-| Backend     | Go (net/http + chi router)                       |
-| Database    | PostgreSQL 15                                    |
-| Migrations  | `golang-migrate`                                 |
-| Auth        | JWT (HS256, 24h expiry) + bcrypt (cost 12)       |
-| Frontend    | React 18 + TypeScript                            |
-| UI Library  | shadcn/ui (Radix primitives + Tailwind CSS)      |
-| State       | React Query (server state) + Context (auth)      |
-| Routing     | React Router v6                                  |
-| Infra       | Docker + Docker Compose                          |
+| Layer            | Technology                                          |
+|------------------|------------------------------------------------------|
+| Runtime          | Node.js + TypeScript                                 |
+| Framework        | Express.js                                           |
+| Database         | Neon PostgreSQL (serverless cloud Postgres)           |
+| Auth             | JWT (HS256, 24h expiry) + bcrypt (cost 12)           |
+| Migrations       | Custom migration runner (`scripts/migrate.ts`)        |
+| DB Driver        | Raw SQL via `pg` / `postgres` driver                 |
+| Containerization | Docker + Docker Compose                              |
+
+### Folder Structure
+
+```
+backend/
+├── build/                    # Compiled JS output (tsc)
+├── migrations/               # SQL migration files (up + down)
+├── scripts/
+│   └── migrate.ts            # Migration runner script
+├── src/
+│   ├── api/                  # Route definitions
+│   ├── config/
+│   │   ├── db.ts             # Neon DB connection setup
+│   │   └── env.ts            # Environment variable validation
+│   ├── constants/            # App-wide constants (enums, status codes, etc.)
+│   ├── controllers/          # Request handlers (thin layer, delegates to services)
+│   ├── datalayer/            # Raw SQL queries (repository pattern)
+│   ├── helpers/              # Utility functions (JWT, hashing, response helpers)
+│   ├── interfaces/           # TypeScript interfaces and types
+│   ├── loaders/              # App initialization (DB, middleware, routes)
+│   ├── middlewares/          # Auth, error handling, validation middleware
+│   ├── models/               # Data model definitions
+│   ├── services/             # Business logic layer
+│   ├── utility/
+│   │   └── app_socket_serve  # WebSocket / socket setup
+│   └── app.ts                # Express app entry point
+├── .dockerignore
+├── .env.example              # Example env vars (commit this, never .env)
+├── .gitignore
+├── docker-compose.yml
+├── Dockerfile
+├── package.json
+├── package-lock.json
+├── start.sh                  # Container startup script (migrate + start)
+└── tsconfig.json
+```
 
 ---
 
 ## Architecture Decisions
 
-### Backend: Standard library over framework
+### Node.js + TypeScript over Go
 
-I used Go's `net/http` with the `chi` router rather than a heavier framework like Gin or Echo. `chi` is lightweight, idiomatic, and its middleware model is easy to reason about. This keeps the dependency surface small and makes the routing layer transparent.
+The project is built in Node.js + TypeScript. TypeScript provides strong compile-time safety — interfaces, enums, strict null checks — that keeps the codebase maintainable as it scales, without sacrificing Node.js's fast iteration speed. The spec permits any language; TypeScript was chosen as it's the team's primary backend language.
 
-### Auth: JWT stored in localStorage, not cookies
+### Neon PostgreSQL (serverless cloud Postgres)
 
-JWTs are returned on login and stored in localStorage on the client. This was a pragmatic choice for a take-home scope — it avoids CSRF complexity while keeping the auth flow simple. In a production system I'd prefer `httpOnly` cookies to mitigate XSS risk.
+Neon is a serverless Postgres provider that is fully wire-compatible with standard PostgreSQL. This means the SQL and driver code are identical to self-hosted Postgres — no vendor lock-in at the query level. The key advantage for local development: **no Postgres container needed**. The API connects directly to the Neon cloud instance via a `DATABASE_URL` connection string in `.env`, keeping the Docker setup lightweight.
 
-### Database: Raw SQL over ORM
+### Layered Architecture: Controller → Service → Datalayer
 
-All queries are written in raw SQL using `pgx` (the PostgreSQL driver). ORMs abstract away the database in ways that make query performance hard to reason about. For a project this size, the overhead of writing SQL is low and the result is more explicit, reviewable code.
+The codebase follows a strict three-layer separation:
 
-### Migrations: `golang-migrate`, run on startup
+- **Controllers** — parse the HTTP request, call the appropriate service, send the HTTP response. Zero business logic.
+- **Services** — business logic, permission checks, and orchestration across multiple datalayer calls.
+- **Datalayer** — raw SQL queries only. No business logic, no HTTP concerns. One function per query.
 
-Migrations are embedded in the binary using Go's `embed` package and run automatically when the API container starts. This means `docker compose up` is genuinely the only command needed — no separate migration step. Down migrations are included for every file.
+This makes each layer independently testable and easy to change in isolation.
 
-### Frontend: React Query for server state
+### Raw SQL over ORM
 
-Rather than managing loading/error/data states manually with `useEffect`, I used React Query for all API interactions. This gives caching, background refetching, and optimistic updates almost for free. Auth state is managed in a React Context and persisted via localStorage.
+All queries are written in raw SQL inside the datalayer. ORMs abstract away query behaviour in ways that make performance issues hard to diagnose. For a project this size, writing SQL directly is low overhead and produces more transparent, reviewable code.
 
-### Monorepo layout
+### Custom Migration Runner
 
-```
-taskflow/
-├── backend/          # Go API
-│   ├── cmd/server/   # Entry point
-│   ├── internal/     # Handlers, middleware, db, models
-│   └── migrations/   # SQL migration files (up + down)
-├── frontend/         # React app
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   ├── api/      # API client functions
-│   │   └── hooks/    # React Query hooks
-├── docker-compose.yml
-├── .env.example
-└── README.md
-```
+Migrations are managed via `scripts/migrate.ts` and plain `.sql` files in `migrations/`. This avoids adding a heavy CLI dependency and keeps the entire migration flow visible and version-controlled alongside the source code.
 
 ### What I intentionally left out
 
-- **Email verification** — adds infra complexity (SMTP/SES) that's out of scope here.
-- **Refresh tokens** — 24h JWT expiry is acceptable for a take-home; production would need token rotation.
-- **Role-based access control** — the spec only requires owner-level permissions, so I modeled that explicitly rather than building a generalized RBAC system.
-- **Pagination** — implemented for the tasks list endpoint (`?page=&limit=`), skipped for projects (typically low cardinality).
+- **Refresh tokens** — 24h JWT expiry is fine for this scope; production needs short-lived access tokens + refresh rotation.
+- **Email verification** — requires SMTP/email infra that is out of scope.
+- **Rate limiting** — auth endpoints should have rate limits in production (e.g., `express-rate-limit`).
+- **Generalized RBAC** — permissions are modelled explicitly per the spec (owner vs. assignee) rather than building a generic roles system.
 
 ---
 
 ## Running Locally
 
-> **Prerequisites:** Docker and Docker Compose only. No Go, Node, or PostgreSQL required locally.
+> **Prerequisites:** Docker and Docker Compose only. Node.js is not required on the host.
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-name/taskflow
-cd taskflow
+git clone https://github.com/your-name/taskflow-backend
+cd taskflow-backend
 
-# 2. Copy environment variables
+# 2. Copy and fill in environment variables
 cp .env.example .env
+# Edit .env — set DATABASE_URL to your Neon connection string
+# Set JWT_SECRET to a long random string
 
-# 3. Start the full stack (PostgreSQL + API + React app)
+# 3. Start the API server
 docker compose up
 ```
 
-- **Frontend:** http://localhost:3000
-- **API:** http://localhost:8080
-- **PostgreSQL:** localhost:5432
-
-The first run will build the Docker images, run all database migrations, and seed the database with test data. Subsequent runs use cached layers and start in seconds.
+**API is available at: `http://localhost:3000`**
 
 To run in detached mode:
 
@@ -114,74 +133,101 @@ To run in detached mode:
 docker compose up -d
 ```
 
-To stop and remove volumes (full reset):
+To run without Docker (local dev with hot reload):
 
 ```bash
-docker compose down -v
+npm install
+npm run dev       # starts nodemon / ts-node in watch mode
 ```
+
+To compile and run the built output:
+
+```bash
+npm run build     # compiles TypeScript → build/
+npm start         # runs build/app.js
+```
+
+---
+
+## Environment Variables
+
+Copy `.env.example` to `.env` and set the required values:
+
+```bash
+cp .env.example .env
+```
+
+| Variable       | Required | Description                                       | Example                                              |
+|----------------|----------|---------------------------------------------------|------------------------------------------------------|
+| `PORT`         | Yes      | Port the API listens on                           | `3000`                                               |
+| `DATABASE_URL` | Yes      | Neon PostgreSQL connection string                 | `postgresql://user:pass@ep-xxx.neon.tech/db?sslmode=require` |
+| `JWT_SECRET`   | Yes      | Secret key used to sign JWTs                      | `a-very-long-random-secret-string`                   |
+| `NODE_ENV`     | No       | Environment mode                                  | `development` / `production`                         |
+
+> ⚠️ **Never commit `.env` to git.** Only `.env.example` should be in version control.
 
 ---
 
 ## Running Migrations
 
-Migrations run **automatically on API container startup** — no manual step is required.
+Migrations run **automatically on container startup** via `start.sh` — no manual step is needed when using Docker.
 
-If you need to run them manually (e.g., against a local Postgres instance):
+To run migrations manually (e.g., against Neon from your local machine):
 
 ```bash
-# Install golang-migrate
-brew install golang-migrate  # macOS
-# or: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+# Run all pending migrations (up)
+npx ts-node scripts/migrate.ts up
 
-# Run migrations up
-migrate -path ./backend/migrations -database "postgres://taskflow:taskflow@localhost:5432/taskflow?sslmode=disable" up
-
-# Roll back the last migration
-migrate -path ./backend/migrations -database "postgres://taskflow:taskflow@localhost:5432/taskflow?sslmode=disable" down 1
+# Roll back the last migration (down)
+npx ts-node scripts/migrate.ts down
 ```
 
-Migration files live in `backend/migrations/` and follow the naming convention:
+Migration files live in `migrations/` and follow this naming convention:
 
 ```
-000001_create_users.up.sql
-000001_create_users.down.sql
-000002_create_projects.up.sql
-000002_create_projects.down.sql
-000003_create_tasks.up.sql
-000003_create_tasks.down.sql
+migrations/
+├── 001_create_users.up.sql
+├── 001_create_users.down.sql
+├── 002_create_projects.up.sql
+├── 002_create_projects.down.sql
+├── 003_create_tasks.up.sql
+└── 003_create_tasks.down.sql
 ```
+
+Both `up` and `down` files exist for every migration, so rollbacks are always possible.
 
 ---
 
 ## Test Credentials
 
-The seed script creates the following user, project, and tasks automatically:
+The seed script creates the following test data automatically on startup:
 
 ```
 Email:    test@example.com
 Password: password123
 ```
 
-Seeded data includes:
+**Seeded data includes:**
 
-- **1 user** — the test user above
-- **1 project** — "Website Redesign" (owned by the test user)
+- **1 user** — the credentials above
+- **1 project** — "Website Redesign" owned by the test user
 - **3 tasks** — one each in `todo`, `in_progress`, and `done` status
 
-You can log in immediately at http://localhost:3000/login without registering.
+You can log in immediately using the test credentials without registering.
 
 ---
 
 ## API Reference
 
-**Base URL:** `http://localhost:8080`
+**Base URL:** `http://localhost:3000`
 
-All non-auth endpoints require:
+All protected endpoints require the following header:
+
 ```
 Authorization: Bearer <token>
 ```
 
-All responses are `Content-Type: application/json`.
+All responses use `Content-Type: application/json`.
 
 ---
 
@@ -191,7 +237,7 @@ All responses are `Content-Type: application/json`.
 
 Register a new user.
 
-**Request:**
+**Request body:**
 ```json
 {
   "name": "Jane Doe",
@@ -217,7 +263,9 @@ Register a new user.
 
 #### `POST /auth/login`
 
-**Request:**
+Log in with email and password.
+
+**Request body:**
 ```json
 {
   "email": "jane@example.com",
@@ -230,7 +278,7 @@ Register a new user.
 {
   "token": "<jwt>",
   "user": {
-    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "id": "uuid",
     "name": "Jane Doe",
     "email": "jane@example.com"
   }
@@ -243,7 +291,7 @@ Register a new user.
 
 #### `GET /projects`
 
-List all projects the current user owns or has tasks in.
+List all projects the authenticated user owns or has tasks in.
 
 **Response `200`:**
 ```json
@@ -266,7 +314,7 @@ List all projects the current user owns or has tasks in.
 
 Create a new project. The authenticated user becomes the owner.
 
-**Request:**
+**Request body:**
 ```json
 {
   "name": "New Project",
@@ -320,9 +368,9 @@ Get project details including all its tasks.
 
 #### `PATCH /projects/:id`
 
-Update a project's name or description. **Owner only.**
+Update project name or description. **Project owner only.**
 
-**Request:**
+**Request body:**
 ```json
 {
   "name": "Updated Name",
@@ -330,19 +378,19 @@ Update a project's name or description. **Owner only.**
 }
 ```
 
-**Response `200`:** Returns updated project object.
+**Response `200`:** Returns the updated project object.
 
 ---
 
 #### `DELETE /projects/:id`
 
-Delete a project and all its tasks. **Owner only.**
+Delete a project and all its tasks. **Project owner only.**
 
 **Response `204`:** No content.
 
 ---
 
-#### `GET /projects/:id/stats` *(bonus)*
+#### `GET /projects/:id/stats`
 
 Task counts grouped by status and by assignee.
 
@@ -367,17 +415,21 @@ Task counts grouped by status and by assignee.
 
 #### `GET /projects/:id/tasks`
 
-List tasks in a project. Supports filters and pagination.
+List tasks for a project. Supports filtering and pagination.
 
-**Query params:**
-- `?status=todo|in_progress|done`
-- `?assignee=<user_uuid>`
-- `?page=1&limit=20`
+**Query parameters:**
+
+| Param      | Type   | Description                              |
+|------------|--------|------------------------------------------|
+| `status`   | string | `todo` \| `in_progress` \| `done`        |
+| `assignee` | uuid   | Filter by assignee user ID               |
+| `page`     | number | Page number (default: `1`)               |
+| `limit`    | number | Results per page (default: `20`)         |
 
 **Response `200`:**
 ```json
 {
-  "tasks": [ /* task objects */ ],
+  "tasks": [],
   "total": 42,
   "page": 1,
   "limit": 20
@@ -388,9 +440,9 @@ List tasks in a project. Supports filters and pagination.
 
 #### `POST /projects/:id/tasks`
 
-Create a task in a project.
+Create a task within a project.
 
-**Request:**
+**Request body:**
 ```json
 {
   "title": "Design homepage",
@@ -401,7 +453,7 @@ Create a task in a project.
 }
 ```
 
-**Response `201`:** Returns created task object.
+**Response `201`:** Returns the created task object.
 
 ---
 
@@ -409,7 +461,7 @@ Create a task in a project.
 
 Update a task. All fields are optional.
 
-**Request:**
+**Request body:**
 ```json
 {
   "title": "Updated title",
@@ -421,7 +473,7 @@ Update a task. All fields are optional.
 }
 ```
 
-**Response `200`:** Returns updated task object.
+**Response `200`:** Returns the updated task object.
 
 ---
 
@@ -435,21 +487,16 @@ Delete a task. **Project owner or task creator only.**
 
 ### Error Responses
 
-All errors follow a consistent structure:
+All errors follow a consistent shape:
 
-```json
-// 400 Validation error
-{ "error": "validation failed", "fields": { "email": "is required" } }
+| Status | When                              | Body                                                                         |
+|--------|-----------------------------------|------------------------------------------------------------------------------|
+| `400`  | Validation failed                 | `{ "error": "validation failed", "fields": { "email": "is required" } }`    |
+| `401`  | Missing or invalid token          | `{ "error": "unauthorized" }`                                                |
+| `403`  | Authenticated but not permitted   | `{ "error": "forbidden" }`                                                   |
+| `404`  | Resource not found                | `{ "error": "not found" }`                                                   |
 
-// 401 Unauthenticated
-{ "error": "unauthorized" }
-
-// 403 Forbidden (authenticated but not allowed)
-{ "error": "forbidden" }
-
-// 404 Not found
-{ "error": "not found" }
-```
+> Note: `401` and `403` are never conflated. Unauthenticated requests always get `401`; authenticated requests that lack permission always get `403`.
 
 ---
 
@@ -457,20 +504,19 @@ All errors follow a consistent structure:
 
 ### Shortcuts taken
 
-- **No refresh tokens.** The JWT is long-lived (24h). A production system needs short-lived access tokens and a refresh token rotation strategy.
-- **localStorage for JWT.** Vulnerable to XSS in theory. `httpOnly` cookies with CSRF protection would be the production approach.
-- **Minimal test coverage.** I wrote integration tests for the auth and task endpoints but skipped unit tests for individual handler functions. The happy-path flows are covered; edge cases less so.
-- **No rate limiting.** The auth endpoints especially should have rate limits to prevent brute-force.
-- **Basic error logging.** Structured logging with `slog` is in place, but there's no log aggregation or alerting setup.
+- **No refresh tokens.** The JWT is long-lived (24h). A production system needs short-lived access tokens (15min) and a refresh token rotation strategy stored in a `refresh_tokens` table.
+- **No rate limiting.** The `/auth/login` and `/auth/register` endpoints are vulnerable to brute-force attacks without per-IP rate limits. `express-rate-limit` would be a quick addition.
+- **Minimal test coverage.** Integration tests cover the core auth and task flows, but unit tests for individual service and datalayer functions were skipped due to time constraints.
+- **No input sanitization layer.** Validation is done manually inside controllers. A `zod` schema layer declared once per resource would be cleaner and eliminate repetition.
+- **Neon direct connection.** For production traffic, Neon's built-in PgBouncer connection pooler should be used to handle concurrency efficiently.
 
 ### What I'd add with more time
 
-- **Refresh token rotation** with a `refresh_tokens` table and short-lived access tokens.
-- **WebSocket / SSE** for real-time task updates — the architecture would accommodate this cleanly with a pub/sub layer (Redis or in-process).
-- **Drag-and-drop** status columns (Kanban view) — the data model supports it; it's a frontend investment.
-- **Full test suite** — table-driven unit tests for handlers, integration tests per endpoint, and a test factory for seeding fixture data.
-- **Pagination on all list endpoints**, not just tasks.
-- **Soft deletes** — instead of hard-deleting tasks/projects, set a `deleted_at` timestamp so data is recoverable.
-- **Audit log** — track who changed what and when, especially for task status transitions.
-- **CI pipeline** — GitHub Actions with lint, test, and Docker build checks on every PR.
-- **Production Dockerfile improvements** — distroless base image, non-root user, read-only filesystem.
+- **Zod schema validation** — declare schemas once per resource, derive TypeScript types from them, and use them in both route validation and controller logic.
+- **Refresh token rotation** — short-lived access tokens + refresh tokens stored in the DB, rotated on each use, with revocation support.
+- **Full test suite** — Jest + Supertest integration tests per endpoint, plus unit tests for services and datalayer functions using a dedicated test database on Neon.
+- **Structured request logging** — log every request with method, path, status, duration, and a correlation ID for tracing across logs.
+- **Soft deletes** — `deleted_at` timestamp on tasks and projects instead of hard deletes, making data recoverable.
+- **CI pipeline** — GitHub Actions: lint, type-check (`tsc --noEmit`), and tests on every PR.
+- **Real-time task updates via WebSocket** — the `app_socket_serve` utility is partially scaffolded; with more time I'd wire up task mutation events so connected clients see status changes without polling.
+- **Audit log** — a `task_history` table recording who changed task status, when, and from what value — useful for project tracking and debugging.
