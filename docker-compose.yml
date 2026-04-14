@@ -1,0 +1,9 @@
+services:
+  api:
+    build: .
+    network_mode: "host"
+    environment:
+      PORT: "3000"
+      DATABASE_URL: "${DATABASE_URL}"
+      JWT_SECRET: "${JWT_SECRET}"
+      BCRYPT_ROUNDS: "12"
